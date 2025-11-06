@@ -162,6 +162,8 @@ def autosplit_receipts(
 ) -> List[np.ndarray]:
     orig = img_bgr.copy()
     H, W = orig.shape[:2]
+    # всё, что почти размером с исходник, считаем "не кроп"
+    FULL_SKIP_RATIO = 0.90 
 
     base_scale = 1400.0 / max(H, W)
     if base_scale < 1.0:
@@ -200,6 +202,9 @@ def autosplit_receipts(
         cnt = max(cnts, key=cv2.contourArea)
         area_cnt = cv2.contourArea(cnt)
         x2,y2,w2,h2 = cv2.boundingRect(cnt)
+        # отсекаем кандидатов, почти равных всему кадру
+        if (w2 * h2) / float(small.shape[0] * small.shape[1]) > FULL_SKIP_RATIO:
+            continue
         rect_ratio = 0 if w2*h2 == 0 else area_cnt / float(w2*h2)
         if rect_ratio < rectangularity_min:
             continue
@@ -226,6 +231,9 @@ def autosplit_receipts(
         for cnt in cnts:
             x,y,w,h = cv2.boundingRect(cnt)
             area = w*h
+            # отсекаем кандидатов, почти равных всему кадру
+            if area / float(small.shape[0] * small.shape[1]) > FULL_SKIP_RATIO:
+                continue
             if area < area_min_abs: continue
             ar = (h / (w + 1e-6)) if expect_vertical else (max(h, w) / (min(h, w) + 1e-6))
             if not (aspect_min <= ar <= aspect_max) and not (square_bias and 0.7 <= ar <= 1.6):
@@ -252,16 +260,20 @@ def autosplit_receipts(
         try:
             warped = four_point_transform(orig, box_full)
             if warped.shape[0] >= 180 and warped.shape[1] >= 180:
-                crops.append(warped); continue
+                # финальная проверка: площадь кропа не должна быть ~всей страницы
+                if (warped.shape[0] * warped.shape[1]) / float(H * W) <= FULL_SKIP_RATIO:
+                    crops.append(warped)
+                    continue
         except Exception:
             pass
         x_full = int(x / total_scale); y_full = int(y / total_scale)
         w_full = int(w / total_scale); h_full = int(h / total_scale)
         crop = orig[y_full:y_full+h_full, x_full:x_full+w_full]
         if crop.shape[0] >= 180 and crop.shape[1] >= 180:
-            crops.append(crop)
+            if (crop.shape[0] * crop.shape[1]) / float(H * W) <= FULL_SKIP_RATIO:
+                crops.append(crop)
 
-    return crops if crops else [orig]
+    return crops
 
 # ---------- main ----------
 def main():
@@ -310,6 +322,10 @@ def main():
                 square_bias=args.square_bias,
                 border_mode=args.border_mode
             )
+            # если ничего не нашли — явно сообщаем и пропускаем файл
+            if not crops:
+                print(f"No receipts detected in: {img_path.name}")
+                continue
 
         for idx, crop in enumerate(crops, 1):
             out_name = f"{img_path.stem}_part{idx}.jpg"
